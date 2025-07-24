@@ -1,52 +1,147 @@
 import logging
-from telegram import Bot
-from utils import get_signal_data, get_news_summary, get_chart_screenshot, calculate_pnl
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Updater, CommandHandler, CallbackContext,
+    CallbackQueryHandler, MessageHandler, Filters
+)
+import json
 
-bot = Bot(token=TELEGRAM_TOKEN)
+# Enable logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-logging.basicConfig(level=logging.INFO)
+# Load or create user preferences
+USER_DATA_FILE = 'user_data.json'
 
-def send_trade_signal(direction, symbol, entry_price, leverage, tp, sl, timeframe, strategy, show_chart=False):
-    news = get_news_summary(symbol)
-    reasoning = f"{strategy} strategy triggered ({direction.upper()})"
+def load_user_data():
+    try:
+        with open(USER_DATA_FILE, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
 
-    message = f"""
-📊 {symbol.upper()} {direction.upper()} SIGNAL
+def save_user_data(data):
+    with open(USER_DATA_FILE, 'w') as f:
+        json.dump(data, f, indent=4)
 
-💰 Entry: {entry_price}
-🎯 TP: {tp} 🛑 SL: {sl}
-📈 Leverage: {leverage}x ⏱️ Timeframe: {timeframe}
-📌 Strategy: {reasoning}
-📰 News: {news.strip() if news else "No major headlines"}
+user_data = load_user_data()
 
-⚠️ Always use proper risk management.
-""".strip()
+# Define coins and strategies
+coin_options = ['BTC', 'ETH', 'XRP', 'SOL']
+strategy_options = ['BATEMAN Method™', 'TJR Fake Breakout', 'E.Q Support Bounce']
 
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+# /start command
+def start(update: Update, context: CallbackContext) -> None:
+    user = update.effective_user
+    chat_id = update.effective_chat.id
 
-    if show_chart:
-        screenshot = get_chart_screenshot(symbol)
-        if screenshot:
-            bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=screenshot)
+    user_data[str(chat_id)] = {
+        "coins": [],
+        "strategies": [],
+        "onboarded": False
+    }
+    save_user_data(user_data)
 
-def send_trade_exit(symbol, direction, entry, exit_price, leverage, sl, tp, strategy, show_chart=False):
-    pnl = calculate_pnl(entry, exit_price, direction, leverage)
-    news = get_news_summary(symbol)
+    intro = (
+        f"🧠 Welcome to **Mini Bateman**.\n\n"
+        "This isn’t a bot — this is an extension of my brain.\n"
+        "You’re about to unlock a level of trading, mindset, and wealth-building that most people never even touch.\n\n"
+        "🚨 I built this for total beginners. That means no more:\n"
+        "• YouTube rabbit holes\n"
+        "• Confusing chart calls\n"
+        "• Clueless entries\n\n"
+        "**This is me walking you through every step.**\n"
+        "Tap below to begin your setup. Let’s build your empire."
+    )
 
-    message = f"""
-✅ {symbol.upper()} {direction.upper()} TRADE CLOSED
+    keyboard = [[InlineKeyboardButton("🚀 Let’s Begin", callback_data='start_setup')]]
+    update.message.reply_text(intro, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-📥 Entry: {entry} 📤 Exit: {exit_price}
-📈 PnL: {pnl:.2f}%
-⚙️ Leverage: {leverage}x 🎯 TP: {tp} 🛑 SL: {sl}
-📌 Reason: Exit per {strategy} logic
-📰 News: {news.strip() if news else "No major headlines"}
-""".strip()
+# Start setup
+def button_handler(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    query.answer()
 
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    chat_id = str(query.message.chat.id)
+    step = user_data.get(chat_id, {}).get("step", None)
 
-    if show_chart:
-        screenshot = get_chart_screenshot(symbol)
-        if screenshot:
-            bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=screenshot)
+    if query.data == "start_setup":
+        user_data[chat_id]["step"] = "select_coins"
+        save_user_data(user_data)
+        send_coin_selection(query)
+
+    elif query.data.startswith("coin_"):
+        coin = query.data.split("_")[1]
+        toggle_selection(user_data[chat_id]["coins"], coin)
+        save_user_data(user_data)
+        send_coin_selection(query, edit=True)
+
+    elif query.data == "done_coins":
+        user_data[chat_id]["step"] = "select_strategies"
+        save_user_data(user_data)
+        send_strategy_selection(query)
+
+    elif query.data.startswith("strat_"):
+        strat = query.data.split("_")[1]
+        toggle_selection(user_data[chat_id]["strategies"], strat)
+        save_user_data(user_data)
+        send_strategy_selection(query, edit=True)
+
+    elif query.data == "done_strategies":
+        user_data[chat_id]["onboarded"] = True
+        save_user_data(user_data)
+        query.edit_message_text("✅ Setup complete.\n\nFrom this moment forward, signals will hit your inbox based on real market conditions — not guesses.\n\n**Watch your inbox. Mini Bateman moves in silence.**", parse_mode="Markdown")
+
+# Toggle selection utility
+def toggle_selection(selection_list, item):
+    if item in selection_list:
+        selection_list.remove(item)
+    else:
+        selection_list.append(item)
+
+# Coin selection UI
+def send_coin_selection(query, edit=False):
+    chat_id = str(query.message.chat.id)
+    selected = user_data[chat_id]["coins"]
+    buttons = [[InlineKeyboardButton(f"{'✅' if c in selected else '➕'} {c}", callback_data=f"coin_{c}")] for c in coin_options]
+    buttons.append([InlineKeyboardButton("✔️ Done", callback_data="done_coins")])
+    msg = "📊 Select the coins you want to trade. You can pick more than one."
+
+    if edit:
+        query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+
+# Strategy selection UI
+def send_strategy_selection(query, edit=False):
+    chat_id = str(query.message.chat.id)
+    selected = user_data[chat_id]["strategies"]
+    buttons = [[InlineKeyboardButton(f"{'✅' if s in selected else '➕'} {s}", callback_data=f"strat_{s}")] for s in strategy_options]
+    buttons.append([InlineKeyboardButton("✔️ Done", callback_data="done_strategies")])
+    msg = "🧠 Choose your strategies. These are the minds you’ll be using to strike."
+
+    if edit:
+        query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
+
+# Error logging
+def error_handler(update: object, context: CallbackContext) -> None:
+    logger.warning('Update "%s" caused error "%s"', update, context.error)
+
+# Launch bot
+def main():
+    updater = Updater("YOUR_TELEGRAM_BOT_TOKEN", use_context=True)
+
+    dispatcher = updater.dispatcher
+    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(CallbackQueryHandler(button_handler))
+    dispatcher.add_error_handler(error_handler)
+
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
