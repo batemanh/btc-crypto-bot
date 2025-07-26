@@ -1,125 +1,74 @@
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Updater, CommandHandler, CallbackContext,
-    CallbackQueryHandler
-)
-from user_data import (
-    load_user_data, save_user_data,
-    set_user_coins, set_user_strategies
-)
-from signal_sender import send_signals_to_users
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
+from telegram import ParseMode
+from get_price_and_signal import get_signal_for_symbol
 
-# LOGGING
+# === CONFIG ===
+TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"  # replace with your real token
+ADMIN_ID = 123456789  # replace with your telegram id for admin testing
+
+# === LOGGING ===
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# GLOBALS
-user_data = load_user_data()
-coin_options = ['BTC', 'ETH', 'XRP', 'SOL']
-strategy_options = ['BATEMAN Method™', 'TJR Fake Breakout', 'E.Q Support Bounce']
-
-# --- /START COMMAND ---
-def start(update: Update, context: CallbackContext) -> None:
-    chat_id = str(update.effective_chat.id)
-    user_data[chat_id] = {"coins": [], "strategies": [], "onboarded": False}
-    save_user_data(user_data)
-
-    intro = (
-        "🧠 This isn’t a bot. This is my brain in code.\n\n"
-        "Signals. Mindset. P&L tracking.\n"
-        "Everything you need to escape.\n\n"
-        "Press start below. Let’s set this up."
+# === COMMANDS ===
+def start(update, context):
+    user = update.message.from_user
+    update.message.reply_text(
+        f"Welcome {user.first_name}.\n\n"
+        f"This is Mini Bateman.\n"
+        f"Type /analyze BTC or /analyze BTC ETH XRP to get signals."
     )
-    keyboard = [[InlineKeyboardButton("🚀 Let’s Begin", callback_data='start_setup')]]
-    update.message.reply_text(intro, reply_markup=InlineKeyboardMarkup(keyboard))
 
-# --- SETUP STEPS ---
-def button_handler(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    query.answer()
-    chat_id = str(query.message.chat.id)
+def analyze(update, context):
+    chat_id = update.message.chat_id
+    args = context.args
 
-    if query.data == "start_setup":
-        user_data[chat_id]["step"] = "select_coins"
-        save_user_data(user_data)
-        send_coin_selection(query)
+    if not args:
+        update.message.reply_text("Use: /analyze BTC or /analyze BTC ETH")
+        return
 
-    elif query.data.startswith("coin_"):
-        coin = query.data.split("_")[1]
-        toggle_selection(user_data[chat_id]["coins"], coin)
-        set_user_coins(chat_id, user_data[chat_id]["coins"])
-        send_coin_selection(query, edit=True)
+    for symbol in args:
+        try:
+            signal = get_signal_for_symbol(symbol.upper())
+            if not signal:
+                update.message.reply_text(f"No valid setup found for {symbol.upper()}.")
+                continue
 
-    elif query.data == "done_coins":
-        user_data[chat_id]["step"] = "select_strategies"
-        save_user_data(user_data)
-        send_strategy_selection(query)
+            text = (
+                f"🚨 *{signal['direction']} ENTRY | {signal['symbol']} [{signal['timeframe']}] — {signal['trade_type']}*\n\n"
+                f"💎 *Confidence:* {signal['confidence']}%\n"
+                f"📈 *Market Sentiment:* {signal['market_sentiment']}\n"
+                f"🧠 *Reasoning:* {signal['reasoning']}\n\n"
+                f"💰 *Entry:* {signal['entry']}\n"
+                f"🎯 *Take Profit:* {signal['tp']}\n"
+                f"🛑 *Stop Loss:* {signal['sl']}\n"
+                f"⚙️ *Leverage:* {signal['leverage']}x\n"
+                f"📊 *PnL Potential:* {signal['pnl']}%\n\n"
+                f"_Signal by Mini Bateman | BATEMAN Method™_\n"
+                f"“What you’re not changing, you’re choosing.”"
+            )
 
-    elif query.data.startswith("strat_"):
-        strat = query.data.split("_")[1]
-        toggle_selection(user_data[chat_id]["strategies"], strat)
-        set_user_strategies(chat_id, user_data[chat_id]["strategies"])
-        send_strategy_selection(query, edit=True)
+            context.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
 
-    elif query.data == "done_strategies":
-        user_data[chat_id]["onboarded"] = True
-        save_user_data(user_data)
-        query.edit_message_text(
-            "✅ Setup complete. From now on, signals will DM you the moment they trigger."
-        )
+        except Exception as e:
+            logger.error(e)
+            update.message.reply_text(f"Error analyzing {symbol.upper()}")
 
-# --- HELPERS ---
-def toggle_selection(selection_list, item):
-    if item in selection_list:
-        selection_list.remove(item)
-    else:
-        selection_list.append(item)
+def error(update, context):
+    logger.warning('Update "%s" caused error "%s"', update, context.error)
 
-def send_coin_selection(query, edit=False):
-    chat_id = str(query.message.chat.id)
-    selected = user_data[chat_id]["coins"]
-    buttons = [
-        [InlineKeyboardButton(f"{'✅' if c in selected else '➕'} {c}", callback_data=f"coin_{c}")]
-        for c in coin_options
-    ]
-    buttons.append([InlineKeyboardButton("✔️ Done", callback_data="done_coins")])
-    msg = "📊 Select coins you want signals for:"
-
-    if edit:
-        query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
-    else:
-        query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
-
-def send_strategy_selection(query, edit=False):
-    chat_id = str(query.message.chat.id)
-    selected = user_data[chat_id]["strategies"]
-    buttons = [
-        [InlineKeyboardButton(f"{'✅' if s in selected else '➕'} {s}", callback_data=f"strat_{s}")]
-        for s in strategy_options
-    ]
-    buttons.append([InlineKeyboardButton("✔️ Done", callback_data="done_strategies")])
-    msg = "🧠 Choose strategies:"
-
-    if edit:
-        query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
-    else:
-        query.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(buttons))
-
-# --- MAIN ---
+# === MAIN ===
 def main():
-    updater = Updater("YOUR_TELEGRAM_BOT_TOKEN", use_context=True)
+    updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CallbackQueryHandler(button_handler))
-
-    # Schedule signal checks every 5 min
-    job_queue = updater.job_queue
-    job_queue.run_repeating(send_signals_to_users, interval=300, first=10)
+    dp.add_handler(CommandHandler("analyze", analyze))
+    dp.add_error_handler(error)
 
     updater.start_polling()
     updater.idle()
