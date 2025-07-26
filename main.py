@@ -2,12 +2,13 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Updater, CommandHandler, CallbackContext,
-    CallbackQueryHandler, MessageHandler, Filters
+    CallbackQueryHandler
 )
 from user_data import (
     load_user_data, save_user_data,
     set_user_coins, set_user_strategies
 )
+from signal_sender import send_signals_to_users
 
 # LOGGING
 logging.basicConfig(
@@ -41,7 +42,6 @@ def button_handler(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     query.answer()
     chat_id = str(query.message.chat.id)
-    step = user_data.get(chat_id, {}).get("step", None)
 
     if query.data == "start_setup":
         user_data[chat_id]["step"] = "select_coins"
@@ -72,32 +72,6 @@ def button_handler(update: Update, context: CallbackContext) -> None:
             "✅ Setup complete. From now on, signals will DM you the moment they trigger."
         )
 
-# --- SIGNAL SENDER PLACEHOLDER (REAL-TIME) ---
-def send_signal(context: CallbackContext, chat_id: str, signal: dict):
-    """
-    This is where real-time signal delivery happens.
-    `signal` is a dictionary containing:
-    {symbol, direction, entry, tp, sl, timeframe, confidence, reason}
-    """
-    text = (
-        f"🚨 {signal['direction']} | {signal['symbol']} [{signal['timeframe']}]\n"
-        f"💎 Confidence: {signal['confidence']}%\n"
-        f"Reason: {signal['reason']}\n\n"
-        f"💰 Entry: {signal['entry']}\n"
-        f"🎯 TP: {signal['tp']}\n"
-        f"🛑 SL: {signal['sl']}\n"
-    )
-
-    keyboard = [[
-        InlineKeyboardButton("📘 Why This Trade?", callback_data='explain_trade')
-    ]]
-
-    context.bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
 # --- HELPERS ---
 def toggle_selection(selection_list, item):
     if item in selection_list:
@@ -108,7 +82,10 @@ def toggle_selection(selection_list, item):
 def send_coin_selection(query, edit=False):
     chat_id = str(query.message.chat.id)
     selected = user_data[chat_id]["coins"]
-    buttons = [[InlineKeyboardButton(f"{'✅' if c in selected else '➕'} {c}", callback_data=f"coin_{c}")] for c in coin_options]
+    buttons = [
+        [InlineKeyboardButton(f"{'✅' if c in selected else '➕'} {c}", callback_data=f"coin_{c}")]
+        for c in coin_options
+    ]
     buttons.append([InlineKeyboardButton("✔️ Done", callback_data="done_coins")])
     msg = "📊 Select coins you want signals for:"
 
@@ -120,7 +97,10 @@ def send_coin_selection(query, edit=False):
 def send_strategy_selection(query, edit=False):
     chat_id = str(query.message.chat.id)
     selected = user_data[chat_id]["strategies"]
-    buttons = [[InlineKeyboardButton(f"{'✅' if s in selected else '➕'} {s}", callback_data=f"strat_{s}")] for s in strategy_options]
+    buttons = [
+        [InlineKeyboardButton(f"{'✅' if s in selected else '➕'} {s}", callback_data=f"strat_{s}")]
+        for s in strategy_options
+    ]
     buttons.append([InlineKeyboardButton("✔️ Done", callback_data="done_strategies")])
     msg = "🧠 Choose strategies:"
 
@@ -131,10 +111,16 @@ def send_strategy_selection(query, edit=False):
 
 # --- MAIN ---
 def main():
-    updater = Updater("YOUR_BOT_TOKEN", use_context=True)
+    updater = Updater("YOUR_TELEGRAM_BOT_TOKEN", use_context=True)
     dp = updater.dispatcher
+
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CallbackQueryHandler(button_handler))
+
+    # Schedule signal checks every 5 min
+    job_queue = updater.job_queue
+    job_queue.run_repeating(send_signals_to_users, interval=300, first=10)
+
     updater.start_polling()
     updater.idle()
 
